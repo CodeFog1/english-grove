@@ -2,6 +2,9 @@ name: Deploy English Grove
 on:
   push:
     branches: [main]
+  schedule:
+    - cron: "31 */2 * * *"
+  workflow_dispatch:
 permissions:
   contents: read
   pages: write
@@ -17,6 +20,43 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v6
+      - name: Fetch international news headlines
+        run: |
+          python3 - <<'PY'
+          import datetime, html, json, os, re, urllib.request, xml.etree.ElementTree as ET
+          from html.parser import HTMLParser
+          from pathlib import Path
+          class TextOnly(HTMLParser):
+              def __init__(self): super().__init__(); self.parts=[]
+              def handle_data(self, data): self.parts.append(data)
+          def plain(value):
+              parser=TextOnly(); parser.feed(value or '')
+              return re.sub(r'\s+', ' ', html.unescape(' '.join(parser.parts))).strip()
+          feeds=[
+              ('BBC News','World','https://feeds.bbci.co.uk/news/world/rss.xml'),
+              ('The Guardian','World','https://www.theguardian.com/world/rss'),
+              ('NPR','World','https://feeds.npr.org/1004/rss.xml')]
+          items=[]
+          for source, section, url in feeds:
+              try:
+                  request=urllib.request.Request(url, headers={'User-Agent':'EnglishGroveNewsReader/1.0'})
+                  with urllib.request.urlopen(request, timeout=20) as response: root=ET.fromstring(response.read())
+                  for item in root.findall('.//item')[:5]:
+                      title=plain(item.findtext('title'))
+                      description=plain(item.findtext('description'))
+                      if title:
+                          items.append({'source':source,'section':section,'title':title[:240],
+                                        'summary':description[:180],
+                                        'published':plain(item.findtext('pubDate'))[:80]})
+              except Exception as exc:
+                  print(f'Feed unavailable: {source}: {exc}')
+          if items:
+              Path('outputs/news.json').write_text(json.dumps({'updated':datetime.datetime.now(datetime.timezone.utc).isoformat(),'items':items},ensure_ascii=False,indent=2),encoding='utf-8')
+              print(f'Fetched {len(items)} news headlines.')
+          else:
+              Path('outputs/news.json').write_text(json.dumps({'updated':datetime.datetime.now(datetime.timezone.utc).isoformat(),'items':[]},ensure_ascii=False),encoding='utf-8')
+              print('No feeds responded; the page will show a retry message.')
+          PY
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v4
         with:
